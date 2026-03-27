@@ -394,5 +394,48 @@ await test("NodeAdapter.detectEcosystem returns false for non-node projects", as
   }
 });
 
+const { GoAdapter } = await import("./lib/adapters/go-adapter.js");
+
+console.log("\n=== Go Adapter Tests ===\n");
+
+await test("GoAdapter.parseGoMod extracts module dependencies", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-go-"));
+  try {
+    await writeFile(join(dir, "go.mod"), `module example.com/myapp\n\ngo 1.21\n\nrequire (\n\tgithub.com/spf13/cobra v1.7.0\n\tgolang.org/x/net v0.17.0\n)\n\nrequire (\n\tgithub.com/inconshreveable/mousetrap v1.1.0 // indirect\n)\n`);
+    const adapter = new GoAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    const deps = await adapter.parseGoMod();
+    assert.equal(deps.module, "example.com/myapp");
+    assert.ok(deps.dependencies.some((d) => d.name === "github.com/spf13/cobra" && d.version === "v1.7.0"));
+    assert.ok(deps.dependencies.some((d) => d.name === "golang.org/x/net"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("GoAdapter.parseGoSum extracts package hashes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-go-"));
+  try {
+    await writeFile(join(dir, "go.sum"), `github.com/spf13/cobra v1.7.0 h1:abc123=\ngithub.com/spf13/cobra v1.7.0/go.mod h1:def456=\ngolang.org/x/net v0.17.0 h1:ghi789=\ngolang.org/x/net v0.17.0/go.mod h1:jkl012=\n`);
+    const adapter = new GoAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    const packages = await adapter.parseGoSum();
+    assert.ok(packages.some((p) => p.name === "github.com/spf13/cobra" && p.version === "v1.7.0"));
+    assert.ok(packages.some((p) => p.name === "golang.org/x/net" && p.version === "v0.17.0"));
+    const cobraEntries = packages.filter((p) => p.name === "github.com/spf13/cobra");
+    assert.equal(cobraEntries.length, 1);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("GoAdapter.detectEcosystem returns false for non-go projects", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-go-"));
+  try {
+    const adapter = new GoAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    assert.equal(await adapter.detectEcosystem(), false);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
