@@ -313,5 +313,34 @@ await test("classifyStaleness returns patch for patch bumps", () => {
   assert.equal(classifyStaleness({ major: 0, minor: 0, patch: 2 }), "patch");
 });
 
+const { classifyLicense } = await import("./lib/licenses.js");
+
+console.log("\n=== License Tests ===\n");
+
+await test("classifies MIT as low risk", () => {
+  assert.equal(classifyLicense("MIT", DEFAULTS.licenses).risk, "low");
+});
+
+await test("classifies Apache-2.0 as low risk", () => {
+  assert.equal(classifyLicense("Apache-2.0", DEFAULTS.licenses).risk, "low");
+});
+
+await test("classifies GPL-3.0-only as high risk", () => {
+  assert.equal(classifyLicense("GPL-3.0-only", DEFAULTS.licenses).risk, "high");
+});
+
+await test("classifies MPL-2.0 as medium risk", () => {
+  assert.equal(classifyLicense("MPL-2.0", DEFAULTS.licenses).risk, "medium");
+});
+
+await test("classifies unknown license as unknown risk", () => {
+  assert.equal(classifyLicense("Proprietary-Weird", DEFAULTS.licenses).risk, "unknown");
+});
+
+await test("classifies null/undefined license as unknown", () => {
+  assert.equal(classifyLicense(null, DEFAULTS.licenses).risk, "unknown");
+  assert.equal(classifyLicense(undefined, DEFAULTS.licenses).risk, "unknown");
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
