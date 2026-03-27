@@ -563,5 +563,17 @@ await test("checkToolAvailability reports available/unavailable correctly", asyn
   assert.equal(typeof status.node.npm.available, "boolean");
 });
 
+console.log("\n=== Integration Tests ===\n");
+
+await test("scan_project works on sentinel-mcp itself (node ecosystem)", async () => {
+  const scanner2 = new Scanner(DEFAULTS);
+  const report = await scanner2.scanProject(process.cwd());
+  assert.equal(report.project, process.cwd());
+  assert.ok(report.ecosystems.includes("node"));
+  assert.ok(report.scannedAt);
+  assert.ok(report.toolMode.node === "native" || report.toolMode.node === "fallback");
+  console.log(`    scanned ${report.licenses.length} licenses, ${report.outdated.length} outdated, ${report.vulnerabilities.length} vulns`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
