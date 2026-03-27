@@ -267,5 +267,51 @@ await test("OsvClient.parseVulns extracts structured data from OSV response", ()
   assert.equal(vulns[0].summary, "Test vulnerability");
 });
 
+const { compareSemver, classifyStaleness } = await import("./lib/versions.js");
+
+console.log("\n=== Version Tests ===\n");
+
+await test("compareSemver parses major difference", () => {
+  const result = compareSemver("1.0.0", "3.2.1");
+  assert.deepStrictEqual(result, { major: 2, minor: 2, patch: 1 });
+});
+
+await test("compareSemver parses minor difference", () => {
+  const result = compareSemver("1.0.0", "1.5.0");
+  assert.deepStrictEqual(result, { major: 0, minor: 5, patch: 0 });
+});
+
+await test("compareSemver parses patch difference", () => {
+  const result = compareSemver("1.2.3", "1.2.7");
+  assert.deepStrictEqual(result, { major: 0, minor: 0, patch: 4 });
+});
+
+await test("compareSemver handles equal versions", () => {
+  const result = compareSemver("2.0.0", "2.0.0");
+  assert.deepStrictEqual(result, { major: 0, minor: 0, patch: 0 });
+});
+
+await test("compareSemver handles versions with v prefix", () => {
+  const result = compareSemver("v1.0.0", "v2.0.0");
+  assert.deepStrictEqual(result, { major: 1, minor: 0, patch: 0 });
+});
+
+await test("compareSemver handles non-semver gracefully", () => {
+  const result = compareSemver("latest", "1.0.0");
+  assert.equal(result, null);
+});
+
+await test("classifyStaleness returns major for major bumps", () => {
+  assert.equal(classifyStaleness({ major: 1, minor: 0, patch: 0 }), "major");
+});
+
+await test("classifyStaleness returns minor for minor bumps", () => {
+  assert.equal(classifyStaleness({ major: 0, minor: 3, patch: 0 }), "minor");
+});
+
+await test("classifyStaleness returns patch for patch bumps", () => {
+  assert.equal(classifyStaleness({ major: 0, minor: 0, patch: 2 }), "patch");
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
