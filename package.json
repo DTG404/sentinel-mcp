@@ -1,0 +1,19 @@
+{
+  "name": "sentinel-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for multi-project dependency auditing — vulnerabilities, outdated packages, and license risks across Go, Node.js, and Python",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test.js"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^4.3.6"
+  }
+}
