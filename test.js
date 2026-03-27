@@ -510,5 +510,40 @@ await test("Scanner.scanProject handles unknown ecosystems gracefully", async ()
   } finally { await rm(dir, { recursive: true }); }
 });
 
+const { formatIssue, filterByThreshold } = await import("./lib/github-issues.js");
+
+console.log("\n=== GitHub Issues Tests ===\n");
+
+await test("formatIssue creates correct title and body", () => {
+  const vuln = { id: "CVE-2024-1234", severity: "high", package: "lodash", installedVersion: "4.17.20", fixedVersion: "4.17.21", summary: "Prototype pollution", url: "https://osv.dev/vulnerability/CVE-2024-1234" };
+  const issue = formatIssue(vuln, "node");
+  assert.ok(issue.title.includes("[HIGH]"));
+  assert.ok(issue.title.includes("CVE-2024-1234"));
+  assert.ok(issue.title.includes("lodash"));
+  assert.ok(issue.body.includes("4.17.20"));
+  assert.ok(issue.body.includes("4.17.21"));
+  assert.ok(issue.body.includes("sentinel-mcp"));
+});
+
+await test("filterByThreshold filters correctly at high threshold", () => {
+  const vulns = [{ id: "a", severity: "critical" }, { id: "b", severity: "high" }, { id: "c", severity: "medium" }, { id: "d", severity: "low" }];
+  const filtered = filterByThreshold(vulns, "high");
+  assert.equal(filtered.length, 2);
+  assert.ok(filtered.some((v) => v.id === "a"));
+  assert.ok(filtered.some((v) => v.id === "b"));
+});
+
+await test("filterByThreshold filters correctly at medium threshold", () => {
+  const vulns = [{ id: "a", severity: "critical" }, { id: "b", severity: "high" }, { id: "c", severity: "medium" }, { id: "d", severity: "low" }];
+  const filtered = filterByThreshold(vulns, "medium");
+  assert.equal(filtered.length, 3);
+});
+
+await test("filterByThreshold returns all for low threshold", () => {
+  const vulns = [{ id: "a", severity: "critical" }, { id: "b", severity: "low" }];
+  const filtered = filterByThreshold(vulns, "low");
+  assert.equal(filtered.length, 2);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
