@@ -478,5 +478,37 @@ await test("PythonAdapter.parseRequirementsTxt handles empty file", async () => 
   }
 });
 
+const { Scanner } = await import("./lib/scanner.js");
+
+console.log("\n=== Scanner Tests ===\n");
+
+await test("Scanner.scanProject returns report with correct structure", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-scan-"));
+  try {
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: {}, license: "MIT" }));
+    const scanner = new Scanner(DEFAULTS);
+    const report = await scanner.scanProject(dir);
+    assert.equal(report.project, dir);
+    assert.ok(Array.isArray(report.ecosystems));
+    assert.ok(report.ecosystems.includes("node"));
+    assert.ok(Array.isArray(report.vulnerabilities));
+    assert.ok(Array.isArray(report.outdated));
+    assert.ok(Array.isArray(report.licenses));
+    assert.ok(Array.isArray(report.errors));
+    assert.ok(report.scannedAt);
+    assert.ok(report.toolMode);
+  } finally { await rm(dir, { recursive: true }); }
+});
+
+await test("Scanner.scanProject handles unknown ecosystems gracefully", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-scan-"));
+  try {
+    const scanner = new Scanner(DEFAULTS);
+    const report = await scanner.scanProject(dir);
+    assert.equal(report.ecosystems.length, 0);
+    assert.equal(report.vulnerabilities.length, 0);
+  } finally { await rm(dir, { recursive: true }); }
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
