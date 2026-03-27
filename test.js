@@ -86,5 +86,45 @@ await test("loadConfig falls back to defaults on invalid JSON", async () => {
   }
 });
 
+const { Cache } = await import("./lib/cache.js");
+
+console.log("\n=== Cache Tests ===\n");
+
+await test("cache stores and retrieves scan results", () => {
+  const cache = new Cache(60_000);
+  const report = { project: "/test", vulnerabilities: [] };
+  cache.set("/test", report);
+  assert.deepStrictEqual(cache.get("/test"), report);
+});
+
+await test("cache returns null for missing keys", () => {
+  const cache = new Cache(60_000);
+  assert.equal(cache.get("/nonexistent"), null);
+});
+
+await test("cache returns null for expired entries", () => {
+  const cache = new Cache(1);
+  const report = { project: "/test", vulnerabilities: [] };
+  cache.set("/test", report);
+  cache._entries.get("/test").timestamp = Date.now() - 100;
+  assert.equal(cache.get("/test"), null);
+});
+
+await test("cache.clear removes all entries", () => {
+  const cache = new Cache(60_000);
+  cache.set("/a", { project: "/a" });
+  cache.set("/b", { project: "/b" });
+  cache.clear();
+  assert.equal(cache.get("/a"), null);
+  assert.equal(cache.get("/b"), null);
+});
+
+await test("cache.has returns freshness status", () => {
+  const cache = new Cache(60_000);
+  assert.equal(cache.has("/test"), false);
+  cache.set("/test", { project: "/test" });
+  assert.equal(cache.has("/test"), true);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
