@@ -207,5 +207,65 @@ await test("skips non-existent root directories", async () => {
   assert.equal(results.length, 0);
 });
 
+const { OsvClient } = await import("./lib/osv-client.js");
+
+console.log("\n=== OSV Client Tests ===\n");
+
+await test("OsvClient constructs with timeout", () => {
+  const client = new OsvClient(5000);
+  assert.equal(client._timeoutMs, 5000);
+});
+
+await test("OsvClient.buildQuery creates correct payload for npm", () => {
+  const client = new OsvClient(5000);
+  const query = client.buildQuery("npm", "lodash", "4.17.20");
+  assert.deepStrictEqual(query, { package: { name: "lodash", ecosystem: "npm" }, version: "4.17.20" });
+});
+
+await test("OsvClient.buildQuery creates correct payload for Go", () => {
+  const client = new OsvClient(5000);
+  const query = client.buildQuery("Go", "golang.org/x/net", "0.17.0");
+  assert.deepStrictEqual(query, { package: { name: "golang.org/x/net", ecosystem: "Go" }, version: "0.17.0" });
+});
+
+await test("OsvClient.buildQuery creates correct payload for PyPI", () => {
+  const client = new OsvClient(5000);
+  const query = client.buildQuery("PyPI", "flask", "2.0.0");
+  assert.deepStrictEqual(query, { package: { name: "flask", ecosystem: "PyPI" }, version: "2.0.0" });
+});
+
+await test("OsvClient.normalizeSeverity maps CVSS to levels", () => {
+  const client = new OsvClient(5000);
+  assert.equal(client.normalizeSeverity(9.5), "critical");
+  assert.equal(client.normalizeSeverity(7.5), "high");
+  assert.equal(client.normalizeSeverity(5.0), "medium");
+  assert.equal(client.normalizeSeverity(2.0), "low");
+  assert.equal(client.normalizeSeverity(undefined), "unknown");
+});
+
+await test("OsvClient.parseVulns extracts structured data from OSV response", () => {
+  const client = new OsvClient(5000);
+  const osvResponse = {
+    vulns: [{
+      id: "GHSA-xxxx-yyyy",
+      summary: "Test vulnerability",
+      database_specific: { severity: "HIGH" },
+      severity: [{ type: "CVSS_V3", score: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+      affected: [{
+        package: { name: "lodash", ecosystem: "npm" },
+        ranges: [{ events: [{ introduced: "0" }, { fixed: "4.17.21" }] }],
+      }],
+      references: [{ type: "ADVISORY", url: "https://example.com" }],
+    }],
+  };
+  const vulns = client.parseVulns(osvResponse, "lodash", "4.17.20");
+  assert.equal(vulns.length, 1);
+  assert.equal(vulns[0].id, "GHSA-xxxx-yyyy");
+  assert.equal(vulns[0].package, "lodash");
+  assert.equal(vulns[0].installedVersion, "4.17.20");
+  assert.equal(vulns[0].fixedVersion, "4.17.21");
+  assert.equal(vulns[0].summary, "Test vulnerability");
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
