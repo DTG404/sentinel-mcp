@@ -437,5 +437,46 @@ await test("GoAdapter.detectEcosystem returns false for non-go projects", async 
   }
 });
 
+const { PythonAdapter } = await import("./lib/adapters/python-adapter.js");
+
+console.log("\n=== Python Adapter Tests ===\n");
+
+await test("PythonAdapter.parseRequirementsTxt extracts pinned versions", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-py-"));
+  try {
+    await writeFile(join(dir, "requirements.txt"), `flask==2.3.0\nrequests==2.31.0\n# this is a comment\nnumpy>=1.24.0\n-e git+https://github.com/foo/bar.git#egg=bar\n`);
+    const adapter = new PythonAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    const deps = await adapter.parseRequirementsTxt();
+    assert.ok(deps.some((d) => d.name === "flask" && d.version === "2.3.0"));
+    assert.ok(deps.some((d) => d.name === "requests" && d.version === "2.31.0"));
+    assert.ok(deps.some((d) => d.name === "numpy" && d.version === "1.24.0"));
+    assert.ok(!deps.some((d) => d.name === "bar"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("PythonAdapter.detectEcosystem returns false for non-python projects", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-py-"));
+  try {
+    const adapter = new PythonAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    assert.equal(await adapter.detectEcosystem(), false);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("PythonAdapter.parseRequirementsTxt handles empty file", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-py-"));
+  try {
+    await writeFile(join(dir, "requirements.txt"), "");
+    const adapter = new PythonAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    const deps = await adapter.parseRequirementsTxt();
+    assert.equal(deps.length, 0);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
