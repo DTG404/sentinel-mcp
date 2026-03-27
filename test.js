@@ -126,5 +126,86 @@ await test("cache.has returns freshness status", () => {
   assert.equal(cache.has("/test"), true);
 });
 
+const { discoverProjects } = await import("./lib/discovery.js");
+
+console.log("\n=== Discovery Tests ===\n");
+
+await test("discovers Node.js project by package.json", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-disc-"));
+  try {
+    const proj = join(dir, "my-node-app");
+    await mkdir(proj, { recursive: true });
+    await writeFile(join(proj, "package.json"), "{}");
+    const results = await discoverProjects([dir], []);
+    assert.equal(results.length, 1);
+    assert.equal(results[0].path, proj);
+    assert.ok(results[0].ecosystems.includes("node"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("discovers Go project by go.mod", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-disc-"));
+  try {
+    const proj = join(dir, "my-go-app");
+    await mkdir(proj, { recursive: true });
+    await writeFile(join(proj, "go.mod"), "module example.com/foo");
+    const results = await discoverProjects([dir], []);
+    assert.equal(results.length, 1);
+    assert.ok(results[0].ecosystems.includes("go"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("discovers Python project by requirements.txt", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-disc-"));
+  try {
+    const proj = join(dir, "my-py-app");
+    await mkdir(proj, { recursive: true });
+    await writeFile(join(proj, "requirements.txt"), "flask==2.0.0");
+    const results = await discoverProjects([dir], []);
+    assert.equal(results.length, 1);
+    assert.ok(results[0].ecosystems.includes("python"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("discovers multi-ecosystem project", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-disc-"));
+  try {
+    const proj = join(dir, "fullstack");
+    await mkdir(proj, { recursive: true });
+    await writeFile(join(proj, "go.mod"), "module example.com/foo");
+    await writeFile(join(proj, "package.json"), "{}");
+    const results = await discoverProjects([dir], []);
+    assert.equal(results.length, 1);
+    assert.ok(results[0].ecosystems.includes("go"));
+    assert.ok(results[0].ecosystems.includes("node"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("excludes directories matching exclude patterns", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-disc-"));
+  try {
+    const proj = join(dir, "node_modules");
+    await mkdir(proj, { recursive: true });
+    await writeFile(join(proj, "package.json"), "{}");
+    const results = await discoverProjects([dir], ["*/node_modules/*", "*/node_modules"]);
+    assert.equal(results.length, 0);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("skips non-existent root directories", async () => {
+  const results = await discoverProjects(["/nonexistent/path/12345"], []);
+  assert.equal(results.length, 0);
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
