@@ -342,5 +342,57 @@ await test("classifies null/undefined license as unknown", () => {
   assert.equal(classifyLicense(undefined, DEFAULTS.licenses).risk, "unknown");
 });
 
+const { NodeAdapter } = await import("./lib/adapters/node-adapter.js");
+
+console.log("\n=== Node Adapter Tests ===\n");
+
+await test("NodeAdapter.parsePackageJson extracts dependencies", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-node-"));
+  try {
+    await writeFile(join(dir, "package.json"), JSON.stringify({
+      dependencies: { "lodash": "^4.17.20", "express": "^4.18.0" },
+      devDependencies: { "jest": "^29.0.0" },
+      license: "MIT",
+    }));
+    const adapter = new NodeAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    const deps = await adapter.parsePackageJson();
+    assert.equal(deps.dependencies.length, 3);
+    assert.equal(deps.projectLicense, "MIT");
+    assert.ok(deps.dependencies.some((d) => d.name === "lodash"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("NodeAdapter.parsePackageLock extracts resolved versions", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-node-"));
+  try {
+    await writeFile(join(dir, "package-lock.json"), JSON.stringify({
+      lockfileVersion: 3,
+      packages: {
+        "": { name: "test", version: "1.0.0" },
+        "node_modules/lodash": { version: "4.17.21" },
+        "node_modules/express": { version: "4.18.2" },
+      },
+    }));
+    const adapter = new NodeAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    const locked = await adapter.parsePackageLock();
+    assert.equal(locked.length, 2);
+    assert.ok(locked.some((d) => d.name === "lodash" && d.version === "4.17.21"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("NodeAdapter.detectEcosystem returns false for non-node projects", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-node-"));
+  try {
+    const adapter = new NodeAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    assert.equal(await adapter.detectEcosystem(), false);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
