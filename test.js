@@ -545,5 +545,23 @@ await test("filterByThreshold returns all for low threshold", () => {
   assert.equal(filtered.length, 2);
 });
 
+const { checkToolAvailability } = await import("./lib/tool-check.js");
+
+console.log("\n=== Tool Check Tests ===\n");
+
+await test("checkToolAvailability returns object with all ecosystems", async () => {
+  const status = await checkToolAvailability();
+  assert.ok("node" in status);
+  assert.ok("go" in status);
+  assert.ok("python" in status);
+  assert.ok("gh" in status);
+});
+
+await test("checkToolAvailability reports available/unavailable correctly", async () => {
+  const status = await checkToolAvailability();
+  assert.equal(status.node.npm.available, true);
+  assert.equal(typeof status.node.npm.available, "boolean");
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
