@@ -9,10 +9,13 @@ import { checkToolAvailability } from "./lib/tool-check.js";
 import { createGithubIssues } from "./lib/github-issues.js";
 
 const config = await loadConfig();
-const cache = new Cache(config.cache.ttlMs);
+const cache = new Cache(config.cache.ttlMs, config.cache.dir);
+await cache.warmup();
 const scanner = new Scanner(config);
 
 const server = new McpServer({ name: "sentinel", version: "1.0.0" });
+server.setResourceRequestHandlers();
+server.setPromptRequestHandlers();
 
 // 1. scan_project
 server.tool(
@@ -23,7 +26,7 @@ server.tool(
     let report = cache.get(path);
     if (!report) {
       report = await scanner.scanProject(path);
-      cache.set(path, report);
+      await cache.set(path, report);
     }
     return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }] };
   }
@@ -41,7 +44,7 @@ server.tool(
       let report = force ? null : cache.get(project.path);
       if (!report) {
         report = await scanner.scanProject(project.path);
-        cache.set(project.path, report);
+        await cache.set(project.path, report);
       }
       reports.push(report);
     }
