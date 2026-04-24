@@ -4,14 +4,18 @@ import { z } from "zod";
 import { loadConfig } from "./lib/config.js";
 import { Cache } from "./lib/cache.js";
 import { discoverProjects } from "./lib/discovery.js";
-import { Scanner } from "./lib/scanner.js";
+import { Scanner, scanProjectsWithConcurrency } from "./lib/scanner.js";
 import { checkToolAvailability } from "./lib/tool-check.js";
 import { createGithubIssues } from "./lib/github-issues.js";
+import { TrendAnalyzer } from "./lib/trends.js";
 
 const config = await loadConfig();
 const cache = new Cache(config.cache.ttlMs, config.cache.dir);
+const configHash = cache.getConfigHash(config);
 await cache.warmup();
 const scanner = new Scanner(config);
+const trends = new TrendAnalyzer(cache, configHash);
+const SCAN_CONCURRENCY = Math.max(1, Number.parseInt(process.env.SENTINEL_CONCURRENCY ?? "5", 10) || 5);
 
 const server = new McpServer({ name: "sentinel", version: "1.0.0" });
 server.setResourceRequestHandlers();
@@ -23,10 +27,10 @@ server.tool(
   "Scan a single project directory for vulnerabilities, outdated packages, and license issues",
   { path: z.string().describe("Absolute path to the project directory") },
   async ({ path }) => {
-    let report = cache.get(path);
+    let report = cache.get(path, configHash);
     if (!report) {
       report = await scanner.scanProject(path);
-      await cache.set(path, report);
+      await cache.set(path, report, configHash);
     }
     return { content: [{ type: "text", text: JSON.stringify(report, null, 2) }] };
   }
@@ -39,15 +43,17 @@ server.tool(
   { force: z.boolean().optional().describe("Force rescan even if cached results exist") },
   async ({ force = false }) => {
     const projects = await discoverProjects(config.roots, config.exclude);
-    const reports = [];
+    const cachedReports = [];
+    const projectsToScan = [];
     for (const project of projects) {
-      let report = force ? null : cache.get(project.path);
-      if (!report) {
-        report = await scanner.scanProject(project.path);
-        await cache.set(project.path, report);
-      }
-      reports.push(report);
+      const cached = force ? null : cache.get(project.path, configHash);
+      if (cached) cachedReports.push(cached);
+      else projectsToScan.push(project);
     }
+
+    const scannedReports = await scanProjectsWithConcurrency(projectsToScan, scanner, SCAN_CONCURRENCY);
+    await Promise.all(scannedReports.map((report) => cache.set(report.project, report, configHash)));
+    const reports = [...cachedReports, ...scannedReports];
     return { content: [{ type: "text", text: JSON.stringify({ scanned: reports.length, reports }, null, 2) }] };
   }
 );
@@ -70,7 +76,7 @@ server.tool(
     };
 
     for (const project of projects) {
-      const report = cache.get(project.path);
+      const report = cache.get(project.path, configHash);
       if (!report) continue;
       summary.scannedProjects++;
       summary.totalVulnerabilities += report.vulnerabilities.length;
@@ -106,7 +112,7 @@ server.tool(
 
     const vulns = [];
     for (const proj of projects) {
-      const report = cache.get(proj.path);
+      const report = cache.get(proj.path, configHash);
       if (!report) continue;
       for (const v of report.vulnerabilities) {
         if ((SEVERITY_ORDER[v.severity] ?? 0) >= minLevel) {
@@ -133,7 +139,7 @@ server.tool(
 
     const outdated = [];
     for (const proj of projects) {
-      const report = cache.get(proj.path);
+      const report = cache.get(proj.path, configHash);
       if (!report) continue;
       for (const pkg of report.outdated) {
         if (!staleness || pkg.staleness === staleness) {
@@ -160,7 +166,7 @@ server.tool(
 
     const licenses = [];
     for (const proj of projects) {
-      const report = cache.get(proj.path);
+      const report = cache.get(proj.path, configHash);
       if (!report) continue;
       for (const lic of report.licenses) {
         if (!risk || lic.risk === risk) {
@@ -181,7 +187,7 @@ server.tool(
     severity: z.string().optional().describe("Minimum severity threshold: critical, high, medium, low"),
   },
   async ({ project, severity }) => {
-    const report = cache.get(project);
+    const report = cache.get(project, configHash);
     if (!report) {
       return { content: [{ type: "text", text: JSON.stringify({ error: "No cached scan found for project. Run scan_project first." }, null, 2) }] };
     }
@@ -211,6 +217,31 @@ server.tool(
   {},
   async () => {
     return { content: [{ type: "text", text: JSON.stringify(config, null, 2) }] };
+  }
+);
+
+// 10. compare_scan
+server.tool(
+  "compare_scan",
+  "Compare the current cached scan with the previous scan for a project",
+  { project: z.string().describe("Absolute path to the project directory") },
+  async ({ project }) => {
+    const diff = trends.compareScans(project);
+    return { content: [{ type: "text", text: JSON.stringify(diff, null, 2) }] };
+  }
+);
+
+// 11. scan_trends
+server.tool(
+  "scan_trends",
+  "Show vulnerability and outdated trends over time for one project or all projects",
+  {
+    project: z.string().optional().describe("Absolute path to the project directory"),
+    days: z.number().optional().describe("Lookback period in days"),
+  },
+  async ({ project, days = 30 }) => {
+    const data = project ? trends.getTrend(project, days) : trends.getAllTrends(days);
+    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
   }
 );
 

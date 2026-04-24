@@ -126,6 +126,34 @@ await test("cache.has returns freshness status", () => {
   assert.equal(cache.has("/test"), true);
 });
 
+await test("cache invalidates entries when config hash changes", () => {
+  const cache = new Cache(60_000);
+  const configA = { severity: { issueThreshold: "high" }, licenses: { allowed: ["MIT"], flagged: ["GPL-3.0-only"] }, roots: ["/projects"], exclude: ["*/node_modules/*"] };
+  const configB = { severity: { issueThreshold: "critical" }, licenses: { allowed: ["MIT"], flagged: ["GPL-3.0-only"] }, roots: ["/projects"], exclude: ["*/node_modules/*"] };
+  const hashA = cache.getConfigHash(configA);
+  const hashB = cache.getConfigHash(configB);
+  cache.set("/test", { project: "/test" }, hashA);
+  assert.deepStrictEqual(cache.get("/test", hashA), { project: "/test" });
+  assert.equal(cache.get("/test", hashB), null);
+  assert.notEqual(hashA, hashB);
+});
+
+await test("cache preserves report history for trend analysis", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "sentinel-cache-"));
+  try {
+    const cache = new Cache(60_000, cacheDir);
+    const hash = cache.getConfigHash(DEFAULTS);
+    await cache.set("/test", { project: "/test", scannedAt: "2026-04-22T00:00:00.000Z", vulnerabilities: [] }, hash);
+    await cache.set("/test", { project: "/test", scannedAt: "2026-04-23T00:00:00.000Z", vulnerabilities: [{ id: "CVE-1" }] }, hash);
+    const history = cache.getHistory("/test");
+    assert.equal(history.length, 2);
+    assert.equal(history[0].scannedAt, "2026-04-22T00:00:00.000Z");
+    assert.equal(history[1].scannedAt, "2026-04-23T00:00:00.000Z");
+  } finally {
+    await rm(cacheDir, { recursive: true });
+  }
+});
+
 const { discoverProjects } = await import("./lib/discovery.js");
 
 console.log("\n=== Discovery Tests ===\n");
@@ -265,6 +293,36 @@ await test("OsvClient.parseVulns extracts structured data from OSV response", ()
   assert.equal(vulns[0].installedVersion, "4.17.20");
   assert.equal(vulns[0].fixedVersion, "4.17.21");
   assert.equal(vulns[0].summary, "Test vulnerability");
+});
+
+await test("OsvClient.queryWithRetry retries rate-limited requests", async () => {
+  const client = new OsvClient(5000);
+  let attempts = 0;
+  client.query = async (query) => {
+    attempts++;
+    if (attempts < 3) {
+      const err = new Error("rate limited");
+      err.status = 429;
+      throw err;
+    }
+    return { ok: true, query };
+  };
+  const result = await client.queryWithRetry({ package: { name: "lodash" } }, 3);
+  assert.deepStrictEqual(result, { ok: true, query: { package: { name: "lodash" } } });
+  assert.equal(attempts, 3);
+});
+
+await test("OsvClient.queryWithRetry does not retry non-retryable errors", async () => {
+  const client = new OsvClient(5000);
+  let attempts = 0;
+  client.query = async () => {
+    attempts++;
+    const err = new Error("bad request");
+    err.status = 400;
+    throw err;
+  };
+  await assert.rejects(() => client.queryWithRetry({ package: { name: "lodash" } }, 3), /bad request/);
+  assert.equal(attempts, 1);
 });
 
 const { compareSemver, classifyStaleness } = await import("./lib/versions.js");
@@ -478,6 +536,83 @@ await test("PythonAdapter.parseRequirementsTxt handles empty file", async () => 
   }
 });
 
+const { RustAdapter } = await import("./lib/adapters/rust-adapter.js");
+
+console.log("\n=== Rust Adapter Tests ===\n");
+
+await test("RustAdapter detects Cargo projects and parses dependency metadata", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-rust-"));
+  try {
+    await writeFile(join(dir, "Cargo.toml"), `[package]\nname = "demo"\nversion = "0.1.0"\nlicense = "MIT"\n\n[dependencies]\nserde = "1.0.188"\nreqwest = { version = "0.11.22", features = ["json"] }\n\n[dev-dependencies]\ninsta = "1.34.0"\n`);
+    await writeFile(join(dir, "Cargo.lock"), `version = 3\n\n[[package]]\nname = "serde"\nversion = "1.0.188"\n\n[[package]]\nname = "reqwest"\nversion = "0.11.22"\n\n[[package]]\nname = "insta"\nversion = "1.34.0"\n`);
+    const adapter = new RustAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    assert.equal(await adapter.detectEcosystem(), true);
+    const manifest = await adapter.parseCargoToml();
+    const lock = await adapter.parseCargoLock();
+    assert.equal(manifest.package.name, "demo");
+    assert.equal(manifest.package.license, "MIT");
+    assert.ok(manifest.dependencies.some((dep) => dep.name === "serde" && dep.version === "1.0.188"));
+    assert.ok(manifest.dependencies.some((dep) => dep.name === "insta" && dep.dev === true));
+    assert.ok(lock.some((pkg) => pkg.name === "reqwest" && pkg.version === "0.11.22"));
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("RustAdapter falls back to manifest metadata for license detection", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-rust-"));
+  try {
+    await writeFile(join(dir, "Cargo.toml"), `[package]\nname = "demo"\nversion = "0.1.0"\nlicense = "MIT"\n\n[dependencies]\nserde = "1.0.188"\n`);
+    const adapter = new RustAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    adapter._tryNativeLicense = async () => ({ success: false, licenses: [] });
+    const licenses = await adapter.detectLicenses(DEFAULTS.licenses);
+    assert.deepStrictEqual(licenses, [{ package: "demo", license: "MIT", risk: "low" }]);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("RustAdapter.scanVulns uses native cargo-audit results when available", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-rust-"));
+  try {
+    const adapter = new RustAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    adapter._tryNativeAudit = async () => ({ success: true, vulns: [{ id: "RUSTSEC-2024-0001", package: "serde", severity: "high" }] });
+    const result = await adapter.scanVulns({ queryBatch: async () => [] });
+    assert.equal(result.mode, "native");
+    assert.equal(result.vulns[0].id, "RUSTSEC-2024-0001");
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("RustAdapter.checkOutdated falls back to crates.io when cargo-outdated is unavailable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-rust-"));
+  try {
+    await writeFile(join(dir, "Cargo.toml"), `[package]\nname = "demo"\nversion = "0.1.0"\nlicense = "MIT"\n\n[dependencies]\nserde = "1.0.188"\n`);
+    await writeFile(join(dir, "Cargo.lock"), `version = 3\n\n[[package]]\nname = "serde"\nversion = "1.0.188"\n`);
+    const adapter = new RustAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    adapter._tryNativeOutdated = async () => ({ success: false, outdated: [] });
+    adapter._fetchCrateInfo = async () => ({ crate: { max_stable_version: "1.0.190" } });
+    const result = await adapter.checkOutdated(DEFAULTS.licenses);
+    assert.equal(result.mode, "fallback");
+    assert.deepStrictEqual(result.outdated, [{ name: "serde", current: "1.0.188", latest: "1.0.190", staleness: "patch" }]);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
+await test("RustAdapter.detectLicenses uses native cargo-license results when available", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-rust-"));
+  try {
+    const adapter = new RustAdapter(dir, { cliMs: 5000, apiMs: 5000 });
+    adapter._tryNativeLicense = async () => ({ success: true, licenses: [{ package: "serde", license: "MIT", risk: "low" }] });
+    const licenses = await adapter.detectLicenses(DEFAULTS.licenses);
+    assert.deepStrictEqual(licenses, [{ package: "serde", license: "MIT", risk: "low" }]);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
 const { Scanner } = await import("./lib/scanner.js");
 
 console.log("\n=== Scanner Tests ===\n");
@@ -508,6 +643,108 @@ await test("Scanner.scanProject handles unknown ecosystems gracefully", async ()
     assert.equal(report.ecosystems.length, 0);
     assert.equal(report.vulnerabilities.length, 0);
   } finally { await rm(dir, { recursive: true }); }
+});
+
+await test("Scanner.scanProject runs adapter tasks in parallel and isolates failures", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "sentinel-scan-"));
+  try {
+    const scanner = new Scanner(DEFAULTS);
+    scanner._createAdapters = () => ([
+      {
+        name: "rust",
+        adapter: {
+          detectEcosystem: async () => true,
+          scanVulns: async () => { await new Promise((resolve) => setTimeout(resolve, 60)); return { mode: "native", vulns: [{ id: "RUSTSEC-1", package: "serde", severity: "high" }] }; },
+          checkOutdated: async () => { await new Promise((resolve) => setTimeout(resolve, 60)); return { mode: "native", outdated: [{ name: "serde", current: "1.0.0", latest: "1.0.1", staleness: "patch" }] }; },
+          detectLicenses: async () => { throw new Error("license boom"); },
+        },
+      },
+    ]);
+    const started = Date.now();
+    const report = await scanner.scanProject(dir);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 140, `expected parallel adapter work, got ${elapsed}ms`);
+    assert.equal(report.vulnerabilities.length, 1);
+    assert.equal(report.outdated.length, 1);
+    assert.ok(report.errors.some((error) => error.includes("license detection failed: license boom")));
+  } finally { await rm(dir, { recursive: true }); }
+});
+
+await test("scanProjectsWithConcurrency batches project scans", async () => {
+  const { scanProjectsWithConcurrency } = await import("./lib/scanner.js");
+  let active = 0;
+  let maxActive = 0;
+  const scanner = {
+    async scanProject(projectPath) {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      active--;
+      return { project: projectPath };
+    },
+  };
+  const projects = [{ path: "/a" }, { path: "/b" }, { path: "/c" }, { path: "/d" }];
+  const reports = await scanProjectsWithConcurrency(projects, scanner, 2);
+  assert.equal(reports.length, 4);
+  assert.equal(maxActive, 2);
+});
+
+const { TrendAnalyzer } = await import("./lib/trends.js");
+
+console.log("\n=== Trend Tests ===\n");
+
+await test("TrendAnalyzer.compareScans reports new and resolved changes", () => {
+  const project = "/demo";
+  const cache = {
+    get: () => ({
+      project,
+      scannedAt: "2026-04-23T12:00:00.000Z",
+      vulnerabilities: [{ id: "CVE-2", package: "serde", severity: "high" }],
+      outdated: [{ name: "tokio", current: "1.0.0", latest: "1.1.0" }],
+      licenses: [{ package: "demo", license: "Apache-2.0", risk: "low" }],
+    }),
+    getHistory: () => ([
+      {
+        project,
+        scannedAt: "2026-04-22T12:00:00.000Z",
+        vulnerabilities: [{ id: "CVE-1", package: "serde", severity: "critical" }],
+        outdated: [{ name: "reqwest", current: "0.11.0", latest: "0.11.1" }],
+        licenses: [{ package: "demo", license: "MIT", risk: "low" }],
+      },
+      {
+        project,
+        scannedAt: "2026-04-23T12:00:00.000Z",
+        vulnerabilities: [{ id: "CVE-2", package: "serde", severity: "high" }],
+        outdated: [{ name: "tokio", current: "1.0.0", latest: "1.1.0" }],
+        licenses: [{ package: "demo", license: "Apache-2.0", risk: "low" }],
+      },
+    ]),
+  };
+  const analyzer = new TrendAnalyzer(cache);
+  const diff = analyzer.compareScans(project);
+  assert.equal(diff.new_vulnerabilities.length, 1);
+  assert.equal(diff.resolved_vulnerabilities.length, 1);
+  assert.equal(diff.new_outdated.length, 1);
+  assert.equal(diff.resolved_outdated.length, 1);
+  assert.deepStrictEqual(diff.license_changes, [{ package: "demo", old_license: "MIT", new_license: "Apache-2.0" }]);
+});
+
+await test("TrendAnalyzer.getTrend classifies worsening trend", () => {
+  const project = "/demo";
+  const cache = {
+    getHistory: () => ([
+      { project, scannedAt: "2026-04-20T00:00:00.000Z", vulnerabilities: [], outdated: [], licenses: [] },
+      { project, scannedAt: "2026-04-21T00:00:00.000Z", vulnerabilities: [{ severity: "high" }], outdated: [{ name: "a" }], licenses: [] },
+      { project, scannedAt: "2026-04-22T00:00:00.000Z", vulnerabilities: [{ severity: "critical" }, { severity: "high" }], outdated: [{ name: "a" }, { name: "b" }], licenses: [] },
+    ]),
+  };
+  const analyzer = new TrendAnalyzer(cache);
+  const trend = analyzer.getTrend(project, 30);
+  assert.equal(trend.project, project);
+  assert.equal(trend.data_points.length, 3);
+  assert.equal(trend.trend, "worsening");
+  assert.equal(trend.data_points[2].critical_count, 1);
+  assert.equal(trend.data_points[2].high_count, 1);
 });
 
 const { formatIssue, filterByThreshold } = await import("./lib/github-issues.js");
